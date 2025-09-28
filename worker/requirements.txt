@@ -1,0 +1,4 @@
+google-cloud-pubsub==2.19.0
+livekit-api==0.6.3
+livekit-agents==0.6.3
+requests==2.31.0

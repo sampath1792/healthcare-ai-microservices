@@ -1,0 +1,143 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  PROJECT_ID: voicecare-project
+  REGION: us-central1
+  REPOSITORY: us-docker.pkg.dev/voicecare-project/artifact-repo
+
+permissions:
+  contents: read
+  id-token: write    
+  pages: write
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [frontend, backend, worker]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node (for frontend/worker)
+        if: matrix.service == 'frontend'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up Python (for backend)
+        if: matrix.service == 'backend' || matrix.service == 'worker'
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'
+
+      - name: Install & Test - Frontend
+        if: matrix.service == 'frontend'
+        working-directory: ./frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Lint & Test - Backend
+        if: matrix.service == 'backend'
+        working-directory: ./backend
+        run: |
+          pip install -r requirements.txt
+          pytest -q
+
+      - name: Test - Worker
+        if: matrix.service == 'worker'
+        working-directory: ./worker
+        run: |
+          pip install -r requirements.txt
+          pytest -q
+
+  build-and-push:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v1
+        with:
+          workload_identity_provider: "projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER"
+          service_account: "sa-deployer@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
+
+      - name: Configure Docker to use Artifact Registry
+        run: gcloud auth configure-docker --quiet
+
+      - name: Build & push frontend image
+        if: ${{ always() && (github.event_name != 'pull_request') }}
+        working-directory: ./frontend
+        run: |
+          docker build -t ${REPOSITORY}/frontend:${IMAGE_TAG} .
+          docker push ${REPOSITORY}/frontend:${IMAGE_TAG}
+
+      - name: Build & push backend image
+        if: ${{ always() && (github.event_name != 'pull_request') }}
+        working-directory: ./backend
+        run: |
+          docker build -t ${REPOSITORY}/backend:${IMAGE_TAG} .
+          docker push ${REPOSITORY}/backend:${IMAGE_TAG}
+
+      - name: Build & push worker image
+        if: ${{ always() && (github.event_name != 'pull_request') }}
+        working-directory: ./worker
+        run: |
+          docker build -t ${REPOSITORY}/worker:${IMAGE_TAG} .
+          docker push ${REPOSITORY}/worker:${IMAGE_TAG}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v1
+        with:
+          workload_identity_provider: "projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER"
+          service_account: "sa-deployer@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
+
+      - name: Deploy backend to Cloud Run
+        run: |
+          gcloud run deploy voicecare-backend \
+            --image ${REPOSITORY}/backend:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --allow-unauthenticated=false \
+            --service-account sa-backend@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
+            --memory=512Mi \
+            --cpu=1 \
+            --concurrency=80 \
+            --min-instances=1 \
+            --max-instances=50
+
+      - name: Deploy frontend to Cloud Run
+        run: |
+          gcloud run deploy voicecare-frontend \
+            --image ${REPOSITORY}/frontend:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --allow-unauthenticated=true \
+            --memory=256Mi \
+            --service-account sa-frontend@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
+            --min-instances=0 \
+            --max-instances=10
+
+      - name: Deploy worker to Cloud Run (jobs or KService)
+        run: |
+          # For pub/sub based workers, you may use Cloud Run jobs or deploy a service scaled by subscription
+          gcloud run deploy voicecare-worker \
+            --image ${REPOSITORY}/worker:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --no-traffic \
+            --service-account sa-worker@${{ env.PROJECT_ID }}.iam.gserviceaccount.com
