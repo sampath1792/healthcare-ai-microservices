@@ -1,8 +1,12 @@
 # 🎙️ VoiceCare – Cloud-Native AI Application
 
-This repository demonstrates a **cloud-native healthcare AI application** built using **Google Cloud Platform (GCP)**.  
+This repository demonstrates a **cloud-native healthcare AI application** built on **Google Cloud Platform (GCP)**.  
 
-It highlights **modern DevOps practices**, **secure microservice architecture**, **real-time AI audio processing**, and **scalable CI/CD workflows**.
+It showcases:
+- **Modern DevOps practices**  
+- **Secure microservice architecture**  
+- **Real-time AI audio/video processing**  
+- **Scalable CI/CD workflows**  
 
 The system enables **real-time voice conversations** between users and an AI assistant using **LiveKit (audio/video infra)**, while ensuring **security, observability, and cost efficiency**.
 
@@ -16,11 +20,12 @@ The system enables **real-time voice conversations** between users and an AI ass
 
 ## 🔑 Core Components
 
-### **Frontend Service (React, Cloud Run, CDN)**
+### **Frontend Service (React + Nginx, Cloud Run, CDN)**
 - Provides the **web/mobile UI** for users.  
 - Containerized React app deployed on **Cloud Run**.  
-- Optionally accelerated via **Cloud CDN** for static assets.  
+- Optionally accelerated with **Cloud CDN**.  
 - Communicates securely through **HTTPS → Load Balancer → API Gateway**.  
+- Runs with **least-privilege service account** (`sa-frontend`).  
 
 ---
 
@@ -31,8 +36,8 @@ The system enables **real-time voice conversations** between users and an AI ass
   - Publishes async jobs to **Pub/Sub**.  
   - Handles **DB operations** with Postgres (Cloud SQL) and MongoDB Atlas.  
   - Proxies requests to **external APIs** (LiveKit, AI/ML APIs).  
-- **Always-on** with min=1 instance for low-latency response.  
-- Deployed with **least-privilege service account** (`sa-backend`).  
+- **Always-on** (min=1 instance) to ensure low-latency responses.  
+- Runs with **least-privilege service account** (`sa-backend`).  
 
 ---
 
@@ -43,9 +48,9 @@ The system enables **real-time voice conversations** between users and an AI ass
   - Consumes tasks from Pub/Sub.  
   - Connects to **LiveKit rooms** for real-time audio/video responses.  
   - Calls **AI/ML APIs** (STT, NLP, TTS).  
-  - Writes results back to **Cloud SQL & MongoDB**.  
+  - Stores results in **Cloud SQL & MongoDB**.  
 - Scales dynamically (`min=0, max=30`).  
-- Uses dedicated **service account** (`sa-worker`).  
+- Runs with **least-privilege service account** (`sa-worker`).  
 
 ---
 
@@ -53,7 +58,7 @@ The system enables **real-time voice conversations** between users and an AI ass
 - Decouples backend and workers.  
 - Provides async reliability with:
   - **Dead Letter Queue (DLQ)** for failed tasks.  
-  - **Idempotent workers** to ensure safe retries.  
+  - **Idempotent workers** to prevent duplicate processing.  
   - **Ack & retry policies** for resiliency.  
 
 ---
@@ -62,11 +67,10 @@ The system enables **real-time voice conversations** between users and an AI ass
 - **Cloud SQL (Postgres)**  
   - Stores structured data (users, sessions, transactions).  
   - **Private IP only, TLS enforced**.  
-  - Access limited to backend/worker service accounts.  
 
 - **MongoDB Atlas (via VPC Peering)**  
-  - Stores unstructured JSON-like data (AI transcripts, logs).  
-  - **VPC Peering + TLS enforced**.  
+  - Stores unstructured/JSON-like data (AI transcripts, logs).  
+  - Access restricted by **VPC peering + TLS**.  
 
 ---
 
@@ -86,66 +90,96 @@ The system enables **real-time voice conversations** between users and an AI ass
 
 ## 🔒 Networking & Security
 
-### **VPC Setup**
+### **VPC Layout**
 - **voicecare-vpc (10.10.0.0/16)**  
   - **Public Subnet (10.10.1.0/24):** Load Balancer, API Gateway, optional CDN.  
   - **Private Subnet (10.10.2.0/24):** Backend, Worker, Databases.  
 
 ### **Firewall Rules**
-- Only **HTTPS (443)** exposed (via Load Balancer).  
-- No direct public DB/worker exposure.  
-- Outbound internet only via **Cloud NAT**.  
-- Internal communication restricted to VPC ranges.  
+- **Ingress:**  
+  - Only allow `443 (HTTPS)` via Load Balancer.  
+  - Deny all direct DB/worker access from internet.  
+
+- **Egress:**  
+  - Outbound calls only via **Cloud NAT**.  
+
+- **Internal:**  
+  - DBs accessible only to backend & worker via VPC private IPs.  
 
 ### **Cloud Armor (WAF & Rate Limiting)**
-- TLS termination + WAF rules for SQLi/XSS protection.  
-- Rate limiting against brute-force/DDoS.  
+- Protects against SQL Injection (SQLi), XSS, DDoS.  
+- Enforces **rate limiting** on public APIs.  
 
 ### **IAM Service Accounts**
-- **sa-backend** → Pub/Sub publisher + Secret Manager reader + DB access.  
-- **sa-worker** → Pub/Sub subscriber + Secret Manager reader + DB write.  
+- **sa-backend** → Pub/Sub publisher + Secret Manager + DB access.  
+- **sa-worker** → Pub/Sub subscriber + Secret Manager + DB write.  
+- **sa-frontend** → Minimal access (read-only configs).  
 - **sa-ci-cd** → GitHub Actions deploy via Workload Identity Federation.  
 - **Principle:** Least-privilege access, rotated automatically.  
 
 ---
 
-## 📊 Observability
-- **Cloud Monitoring & Logging (Ops Suite)**  
-  - Collects logs, traces, and metrics.  
-  - Monitors latency, error rates, and Pub/Sub backlog.  
-  - Alerts on anomalies (e.g., 5xx errors, high latency).  
+## 🔄 Synchronous vs Asynchronous
+
+### ✅ Synchronous
+- Health checks & lightweight API requests.  
+- Authentication & token generation.  
+- Direct DB reads.  
+
+### ⚡ Asynchronous
+- Long-running AI/ML tasks processed by **Worker**.  
+- Backend publishes tasks → Pub/Sub → Worker executes → results stored.  
+
+### ⚠️ Limitations
+- Async tasks may have delays (seconds).  
+- Requires **retry & DLQ** for resiliency.  
+- Idempotency must be enforced to avoid duplicates.  
 
 ---
 
 ## ⚙️ CI/CD Workflow
 
-- **GitHub Actions** automates builds and deployments:  
+Workflow file: `.github/workflows/ci-cd.yml`
+
+- **GitHub Actions** automates:
   1. Run linting & unit tests.  
   2. Build multi-stage Docker images.  
   3. Push images to **Artifact Registry**.  
   4. Deploy to **Cloud Run** via **Workload Identity Federation** (no static secrets).  
+  5. Run smoke tests after deployment.  
+
+---
+
+## 📊 Observability
+
+- **Cloud Monitoring** → metrics (latency, error rate, Pub/Sub backlog).  
+- **Cloud Logging** → centralized structured logs.  
+- **Tracing** → request tracing across services.  
+- **Alerts** → triggered on >5% errors or >500ms latency.  
 
 ---
 
 ## 🚀 Scaling & Load Testing
 
-- **Frontend (Cloud Run)** → 0 → 10 instances.  
-- **Backend API (Cloud Run)** → 1 → 50 instances.  
-- **AI Worker (Cloud Run)** → 0 → 30 instances.  
-- **Load testing setup**: Locust & k6.  
-  - Sustains **1000 RPS** with **<200ms latency**.  
+- **Frontend (Cloud Run):** 0 → 10 instances.  
+- **Backend API (Cloud Run):** 1 → 50 instances.  
+- **Worker (Cloud Run):** 0 → 30 instances.  
+
+### Load Testing
+- Tools: **Locust & k6**.  
+- Sustains **1000 RPS** with **<200ms latency** under load.  
 
 ---
 
 ## 🔐 Security Best Practices
 
-- Secrets stored in **Secret Manager** (no plaintext in code).  
-- **TLS enforced everywhere** (internal + external).  
-- **Private IP only** for DB access.  
-- **Cloud Armor (WAF + Rate limiting)**.  
-- **Service accounts with least-privilege IAM roles**.  
-- **VPC peering for MongoDB Atlas**.  
-- **CI/CD with Workload Identity Federation** (no long-lived credentials).  
+- Secrets only in **Secret Manager**.  
+- **TLS enforced** across all services.  
+- **Private IP only** for DBs.  
+- **Cloud Armor WAF + rate limiting**.  
+- **Service accounts with least privilege**.  
+- **VPC peering** for MongoDB Atlas.  
+- **CI/CD with Workload Identity Federation** (no long-lived secrets).  
 
 ---
 
@@ -155,7 +189,7 @@ The system enables **real-time voice conversations** between users and an AI ass
 - **Secure** → TLS, IAM, WAF, private networking.  
 - **Reliable** → Pub/Sub with retries & DLQ.  
 - **Cost-efficient** → serverless Cloud Run + scale-to-zero workers.  
-- **Developer-friendly** → GitHub Actions CI/CD, clear repo structure.  
+- **Developer-friendly** → CI/CD with GitHub Actions, clear repo structure.  
 
 ---
 
