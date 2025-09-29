@@ -1,10 +1,10 @@
 # 🎙️ VoiceCare – Cloud-Native AI Application
 
-This project demonstrates a **production-grade cloud-native application** built on **Google Cloud Platform (GCP)**.  
-It highlights **modern DevOps practices, microservice architecture, secure networking, and real-time AI processing**.
+This repository demonstrates a **cloud-native healthcare AI application** built using **Google Cloud Platform (GCP)**.  
 
-The system is designed to handle **real-time voice conversations** where users interact with an AI assistant through **LiveKit (audio/video infra)**.  
-It supports **secure APIs, async job processing, database operations, and observability** – all deployed with **scalable, cost-efficient, and secure GCP services**.
+It highlights **modern DevOps practices**, **secure microservice architecture**, **real-time AI audio processing**, and **scalable CI/CD workflows**.
+
+The system enables **real-time voice conversations** between users and an AI assistant using **LiveKit (audio/video infra)**, while ensuring **security, observability, and cost efficiency**.
 
 ---
 
@@ -14,148 +14,185 @@ It supports **secure APIs, async job processing, database operations, and observ
 
 ---
 
-## 🔑 Components & Responsibilities
+## 🔑 Core Components
 
-### **Frontend Service (React, served via Cloud Run & CDN)**
-- Provides the **user interface** for web/mobile users.  
-- Deployed on **Cloud Run**, optionally accelerated via **Cloud CDN** for static assets.  
-- Sends API requests securely via **HTTPS (API Gateway + Load Balancer)**.  
+### **Frontend Service (React, Cloud Run, CDN)**
+- Provides the **web/mobile UI** for users.  
+- Containerized React app deployed on **Cloud Run**.  
+- Optionally accelerated via **Cloud CDN** for static assets.  
+- Communicates securely through **HTTPS → Load Balancer → API Gateway**.  
 
 ---
 
 ### **Backend API Service (FastAPI, Cloud Run)**
-- Core **control-plane** API.  
-- Responsible for:
-  - **User authentication & session management** (JWT, API Keys).  
-  - **Publishing async jobs** to Pub/Sub.  
-  - **Integrating with databases** (Postgres & MongoDB).  
-  - **Proxying requests to external APIs (e.g., LiveKit, AI/ML APIs)**.  
-- Always kept warm (`min=1 instance`) to ensure low-latency API responses.  
+- Implements the **control-plane APIs**.  
+- Responsibilities:
+  - User authentication & **JWT / API Key session management**.  
+  - Publishes async jobs to **Pub/Sub**.  
+  - Handles **DB operations** with Postgres (Cloud SQL) and MongoDB Atlas.  
+  - Proxies requests to **external APIs** (LiveKit, AI/ML APIs).  
+- **Always-on** with min=1 instance for low-latency response.  
+- Deployed with **least-privilege service account** (`sa-backend`).  
 
 ---
 
-### **AI Worker Service (Python, Pub/Sub Consumer)**
-- **Event-driven worker** for async jobs.  
-- Scales dynamically based on Pub/Sub load (`min=0, max=30`).  
+### **AI Worker Service (Python, Pub/Sub Consumer, Cloud Run)**
+- Implements the **data-plane processing**.  
+- Event-driven worker triggered by Pub/Sub.  
 - Responsibilities:
-  - Consumes Pub/Sub tasks.  
-  - Connects to **LiveKit rooms** to simulate AI audio/video responses.  
-  - Calls external **AI/ML APIs** for inference.  
-  - Writes session results back to **Cloud SQL / MongoDB**.  
+  - Consumes tasks from Pub/Sub.  
+  - Connects to **LiveKit rooms** for real-time audio/video responses.  
+  - Calls **AI/ML APIs** (STT, NLP, TTS).  
+  - Writes results back to **Cloud SQL & MongoDB**.  
+- Scales dynamically (`min=0, max=30`).  
+- Uses dedicated **service account** (`sa-worker`).  
 
 ---
 
 ### **Pub/Sub (Messaging Layer)**
-- Decouples backend API and workers.  
-- Ensures reliable async processing with:
-  - **Dead Letter Queues (DLQ)** for failed jobs.  
-  - **Idempotent workers** for safe retries.  
+- Decouples backend and workers.  
+- Provides async reliability with:
+  - **Dead Letter Queue (DLQ)** for failed tasks.  
+  - **Idempotent workers** to ensure safe retries.  
   - **Ack & retry policies** for resiliency.  
 
 ---
 
 ### **Databases**
 - **Cloud SQL (Postgres)**  
-  - Used for structured data (users, sessions, transactions).  
-  - Private IP only, TLS enforced.  
+  - Stores structured data (users, sessions, transactions).  
+  - **Private IP only, TLS enforced**.  
+  - Access limited to backend/worker service accounts.  
 
 - **MongoDB Atlas (via VPC Peering)**  
-  - Used for unstructured/JSON-like data (AI session logs, transcripts).  
-  - Access restricted by VPC peering and TLS.  
+  - Stores unstructured JSON-like data (AI transcripts, logs).  
+  - **VPC Peering + TLS enforced**.  
 
 ---
 
 ### **Secret Manager**
-- Securely stores **API keys, DB credentials, and tokens**.  
-- Injected at runtime into services.  
-- Avoids hardcoding sensitive values.  
+- Centralized **secrets management** for API keys, DB creds, tokens.  
+- Secrets injected securely at runtime → no plaintext configs.  
+- Access controlled via **IAM roles** per service account.  
 
 ---
 
 ### **External APIs**
-- **LiveKit**: Real-time audio/video infra for AI conversations.  
-- **AI/ML APIs**: Speech-to-text (STT), text-to-speech (TTS), NLP models.  
-- Accessed via secure **outbound traffic through Cloud NAT**.  
+- **LiveKit** → Real-time audio/video infra.  
+- **AI/ML APIs** → Speech-to-Text (STT), NLP, Text-to-Speech (TTS).  
+- All outbound traffic goes through **Cloud NAT** for security.  
 
 ---
 
-### **Networking & Security**
-- **VPC with private & public subnets**  
-  - Public Subnet: Load Balancer, API Gateway.  
-  - Private Subnet: Backend, Workers, Databases.  
+## 🔒 Networking & Security
 
-- **Firewall Rules**  
-  - Only **HTTPS (443)** exposed via LB.  
-  - No direct DB or worker public exposure.  
-  - Outbound traffic allowed only via **Cloud NAT**.  
+### **VPC Setup**
+- **voicecare-vpc (10.10.0.0/16)**  
+  - **Public Subnet (10.10.1.0/24):** Load Balancer, API Gateway, optional CDN.  
+  - **Private Subnet (10.10.2.0/24):** Backend, Worker, Databases.  
 
-- **Cloud Armor**  
-  - Web Application Firewall (WAF).  
-  - Protects against DDoS, SQLi, XSS.  
-  - Enforces rate limiting.  
+### **Firewall Rules**
+- Only **HTTPS (443)** exposed (via Load Balancer).  
+- No direct public DB/worker exposure.  
+- Outbound internet only via **Cloud NAT**.  
+- Internal communication restricted to VPC ranges.  
 
-- **IAM Service Accounts**  
-  - Each service runs with least-privilege IAM roles.  
-  - Example:  
-    - `sa-backend` → Pub/Sub publisher + Secret Manager access.  
-    - `sa-worker` → Pub/Sub subscriber + Secret Manager access.  
+### **Cloud Armor (WAF & Rate Limiting)**
+- TLS termination + WAF rules for SQLi/XSS protection.  
+- Rate limiting against brute-force/DDoS.  
+
+### **IAM Service Accounts**
+- **sa-backend** → Pub/Sub publisher + Secret Manager reader + DB access.  
+- **sa-worker** → Pub/Sub subscriber + Secret Manager reader + DB write.  
+- **sa-ci-cd** → GitHub Actions deploy via Workload Identity Federation.  
+- **Principle:** Least-privilege access, rotated automatically.  
 
 ---
 
-### **Observability**
-- **Cloud Monitoring & Logging**  
-  - Collects logs, metrics, and traces.  
-  - Helps in troubleshooting, scaling analysis, and audits.  
+## 📊 Observability
+- **Cloud Monitoring & Logging (Ops Suite)**  
+  - Collects logs, traces, and metrics.  
+  - Monitors latency, error rates, and Pub/Sub backlog.  
+  - Alerts on anomalies (e.g., 5xx errors, high latency).  
 
 ---
 
 ## ⚙️ CI/CD Workflow
 
-- **GitHub Actions** handles build & deploy:
-  1. Run tests on each service.  
-  2. Build Docker images.  
+- **GitHub Actions** automates builds and deployments:  
+  1. Run linting & unit tests.  
+  2. Build multi-stage Docker images.  
   3. Push images to **Artifact Registry**.  
-  4. Deploy services to **Cloud Run** via **Workload Identity Federation** (no long-lived secrets).  
+  4. Deploy to **Cloud Run** via **Workload Identity Federation** (no static secrets).  
 
 ---
 
-## 🚀 Scaling & Performance
+## 🚀 Scaling & Load Testing
 
-- **Frontend**  
-  - Scales between 0 → 10 instances.  
-
-- **Backend API**  
-  - Scales between 1 → 50 instances.  
-  - Concurrency set for low-latency APIs.  
-
-- **AI Worker**  
-  - Scales 0 → 30 based on Pub/Sub load.  
-
-- **Load Testing**  
-  - Verified with **Locust & k6**.  
-  - Achieves **1000 RPS sustained** with **<200ms latency**.  
+- **Frontend (Cloud Run)** → 0 → 10 instances.  
+- **Backend API (Cloud Run)** → 1 → 50 instances.  
+- **AI Worker (Cloud Run)** → 0 → 30 instances.  
+- **Load testing setup**: Locust & k6.  
+  - Sustains **1000 RPS** with **<200ms latency**.  
 
 ---
 
 ## 🔐 Security Best Practices
 
-- **All secrets in Secret Manager** (no plaintext configs).  
-- **TLS enforced** across all services.  
-- **Private IP access only** for databases.  
-- **Rate limiting + WAF** via Cloud Armor.  
-- **Separate IAM identities per service** → strong least-privilege model.  
+- Secrets stored in **Secret Manager** (no plaintext in code).  
+- **TLS enforced everywhere** (internal + external).  
+- **Private IP only** for DB access.  
+- **Cloud Armor (WAF + Rate limiting)**.  
+- **Service accounts with least-privilege IAM roles**.  
+- **VPC peering for MongoDB Atlas**.  
+- **CI/CD with Workload Identity Federation** (no long-lived credentials).  
 
 ---
 
-## ✅ Key Benefits of This Architecture
+## ✅ Benefits of This Architecture
 
-- **Scalable** → auto-scales frontend, backend, workers.  
-- **Secure** → TLS everywhere, WAF, IAM-based access, private networking.  
+- **Scalable** → auto-scales workers, backend, frontend.  
+- **Secure** → TLS, IAM, WAF, private networking.  
+- **Reliable** → Pub/Sub with retries & DLQ.  
 - **Cost-efficient** → serverless Cloud Run + scale-to-zero workers.  
-- **Reliable** → Pub/Sub with DLQ, retries, and idempotency.  
-- **Developer-friendly** → CI/CD with GitHub Actions, no manual deployments.  
+- **Developer-friendly** → GitHub Actions CI/CD, clear repo structure.  
 
 ---
 
 ## 📂 Repository Layout
 
+.
+├── .github/
+│ └── workflows/
+│ └── ci-cd.yml # CI/CD pipeline
+├── README.md # Root documentation (this file)
+├── backend/ # FastAPI backend microservice
+│ ├── Dockerfile
+│ ├── app/
+│ │ └── main.py
+│ ├── requirements.txt
+│ └── tests/
+├── frontend/ # React frontend microservice
+│ ├── Dockerfile
+│ ├── nginx.conf
+│ └── package.json
+├── worker/ # Python AI worker microservice
+│ ├── Dockerfile
+│ ├── worker.py
+│ └── requirements.txt
+└── image.png # Architecture diagram
+
+
+---
+
+## 📘 Documentation
+
+- Each microservice has a **README** with local & cloud run instructions.  
+- Root README (this file) provides **architecture overview, security, CI/CD, and scaling strategy**.  
+
+---
+
+## 🏁 Conclusion
+
+This project delivers a **secure, scalable, cloud-native architecture** for healthcare AI.  
+It adheres to **best DevOps practices**, enforces **strict security controls**, and is built for **real-world production workloads**.
