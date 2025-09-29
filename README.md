@@ -183,7 +183,6 @@ The system enables **real-time voice conversations** between users and an AI ass
 └── image.png # Architecture diagram
 
 
-
 ---
 
 ## 📘 Documentation
