@@ -149,7 +149,7 @@ Workflow file: `.github/workflows/ci-cd.yml`
 
 ## 📘 Related Documentation
 
-- [Root README.md](../README.md) → Full project architecture & overview.  
+- [Root README.md](/README.md) → Full project architecture & overview.  
 - [frontend/README.md](../frontend/README.md) → Frontend service details.  
 - [backend/README.md](../backend/README.md) → Backend service details.  
 - [worker/README.md](../worker/README.md) → Worker service details.  
