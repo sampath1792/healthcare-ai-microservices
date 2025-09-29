@@ -2,9 +2,9 @@ name: CI/CD
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "main","master" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "*" ]   # run tests on all PRs
 
 env:
   PROJECT_ID: voicecare-project
@@ -13,8 +13,7 @@ env:
 
 permissions:
   contents: read
-  id-token: write    
-  pages: write
+  id-token: write
 
 jobs:
   build-and-test:
@@ -26,17 +25,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node (for frontend/worker)
+      - name: Cache Node modules
+        if: matrix.service == 'frontend'
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Cache Python packages
+        if: matrix.service == 'backend' || matrix.service == 'worker'
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles(format('{0}/requirements.txt', matrix.service)) }}
+
+      - name: Set up Node.js
         if: matrix.service == 'frontend'
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '20'
 
-      - name: Set up Python (for backend)
+      - name: Set up Python
         if: matrix.service == 'backend' || matrix.service == 'worker'
         uses: actions/setup-python@v4
         with:
-          python-version: '3.13'
+          python-version: '3.11'
 
       - name: Install & Test - Frontend
         if: matrix.service == 'frontend'
@@ -62,41 +75,41 @@ jobs:
   build-and-push:
     needs: build-and-test
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [frontend, backend, worker]
     env:
       IMAGE_TAG: ${{ github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Authenticate to GCP (Workload Identity Federation)
+      - name: Authenticate to GCP
         uses: google-github-actions/auth@v1
         with:
           workload_identity_provider: "projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER"
           service_account: "sa-deployer@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
 
-      - name: Configure Docker to use Artifact Registry
+      - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker --quiet
 
-      - name: Build & push frontend image
-        if: ${{ always() && (github.event_name != 'pull_request') }}
-        working-directory: ./frontend
+      - name: Build Image
+        working-directory: ./${{ matrix.service }}
         run: |
-          docker build -t ${REPOSITORY}/frontend:${IMAGE_TAG} .
-          docker push ${REPOSITORY}/frontend:${IMAGE_TAG}
+          docker build -t ${REPOSITORY}/${{ matrix.service }}:${IMAGE_TAG} .
 
-      - name: Build & push backend image
-        if: ${{ always() && (github.event_name != 'pull_request') }}
-        working-directory: ./backend
-        run: |
-          docker build -t ${REPOSITORY}/backend:${IMAGE_TAG} .
-          docker push ${REPOSITORY}/backend:${IMAGE_TAG}
+      - name: Scan Image with Trivy
+        uses: aquasecurity/trivy-action@0.16.1
+        with:
+          image-ref: "${{ env.REPOSITORY }}/${{ matrix.service }}:${{ env.IMAGE_TAG }}"
+          format: "table"
+          exit-code: "1"
+          vuln-type: "os,library"
+          severity: "CRITICAL,HIGH"
 
-      - name: Build & push worker image
-        if: ${{ always() && (github.event_name != 'pull_request') }}
-        working-directory: ./worker
+      - name: Push Image
         run: |
-          docker build -t ${REPOSITORY}/worker:${IMAGE_TAG} .
-          docker push ${REPOSITORY}/worker:${IMAGE_TAG}
+          docker push ${REPOSITORY}/${{ matrix.service }}:${IMAGE_TAG}
 
   deploy:
     needs: build-and-push
@@ -128,16 +141,19 @@ jobs:
             --region ${{ env.REGION }} \
             --platform managed \
             --allow-unauthenticated=true \
-            --memory=256Mi \
             --service-account sa-frontend@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
+            --memory=256Mi \
             --min-instances=0 \
             --max-instances=10
 
-      - name: Deploy worker to Cloud Run (jobs or KService)
+      - name: Deploy worker to Cloud Run
         run: |
-          # For pub/sub based workers, you may use Cloud Run jobs or deploy a service scaled by subscription
           gcloud run deploy voicecare-worker \
             --image ${REPOSITORY}/worker:${{ github.sha }} \
             --region ${{ env.REGION }} \
             --no-traffic \
             --service-account sa-worker@${{ env.PROJECT_ID }}.iam.gserviceaccount.com
+
+      - name: Post-Deploy Health Check
+        run: |
+          curl -f https://voicecare-backend-${{ env.REGION }}.a.run.app/health || exit 1
