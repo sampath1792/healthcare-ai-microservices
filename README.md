@@ -162,11 +162,14 @@ The system enables **real-time voice conversations** between users and an AI ass
 ## 📂 Repository Layout
 
 .
-├── .github/workflows/ci-cd.yml # CI/CD pipeline
+├── .github/
+│ └── workflows/
+│ └── ci-cd.yml # CI/CD pipeline
 ├── README.md # Root documentation (this file)
 ├── backend/ # FastAPI backend microservice
 │ ├── Dockerfile
-│ ├── app/main.py
+│ ├── app/
+│ │ └── main.py
 │ ├── requirements.txt
 │ └── tests/
 ├── frontend/ # React frontend microservice
