@@ -2,7 +2,7 @@ name: CI/CD
 
 on:
   push:
-    branches: [ "main","master" ]
+    branches: [ "master" ]
   pull_request:
     branches: [ "*" ]   # run tests on all PRs
 
